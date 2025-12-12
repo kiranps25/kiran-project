@@ -1,51 +1,53 @@
-// MASTER_BRIDGE.ino
-// ESP32-WROOM + E32 433MHz
-// Acts as a transparent USB <-> LoRa bridge for the Python master GUI
+#include "Arduino.h"
+#include "LoRa_E32.h"
 
-#define LORA_SERIAL  Serial1
-#define LORA_RX_PIN  16   // E32 TXD -> ESP32 RX
-#define LORA_TX_PIN  17   // E32 RXD -> ESP32 TX
-#define LORA_M0_PIN  18
-#define LORA_M1_PIN  19
-#define LORA_AUX_PIN 4
+#define RXD2 16
+#define TXD2 17
+#define M0_PIN 4
+#define M1_PIN 5
+#define AUX_PIN 18
 
-void setupPins() {
-  pinMode(LORA_M0_PIN, OUTPUT);
-  pinMode(LORA_M1_PIN, OUTPUT);
-  pinMode(LORA_AUX_PIN, INPUT);
-
-  // Normal transparent mode: M0 = 0, M1 = 0
-  digitalWrite(LORA_M0_PIN, LOW);
-  digitalWrite(LORA_M1_PIN, LOW);
-}
-
-void waitAux() {
-  // Optional: wait until module is ready (AUX HIGH)
-  unsigned long start = millis();
-  while (digitalRead(LORA_AUX_PIN) == LOW) {
-    if (millis() - start > 1000) break; // timeout safeguard
-  }
-}
+LoRa_E32 e32ttl(&Serial2, AUX_PIN, M0_PIN, M1_PIN);
 
 void setup() {
-  Serial.begin(115200);   // PC side (USB)
-  LORA_SERIAL.begin(9600, SERIAL_8N1, LORA_RX_PIN, LORA_TX_PIN); // E32 side
-  setupPins();
+  Serial.begin(115200);
+  Serial2.begin(9600, SERIAL_8N1, RXD2, TXD2);
   delay(500);
-  Serial.println("ESP32 LoRa bridge ready");
+  
+  e32ttl.begin();
+  
+  Serial.println("LoRa Master Ready");
 }
 
 void loop() {
-  // PC -> LoRa
-  while (Serial.available()) {
-    char c = Serial.read();
-    waitAux();
-    LORA_SERIAL.write(c);
+  // Check for incoming data from PC (Flutter app via USB Serial)
+  if (Serial.available()) {
+    String message = Serial.readStringUntil('\n');
+    message.trim();
+    
+    if (message.length() > 0) {
+      // Send via LoRa to Slave
+      ResponseStatus rs = e32ttl.sendMessage(message);
+      
+      if (rs.code == 1) {
+        Serial.println("[SENT] " + message);
+      } else {
+        Serial.println("[ERROR] Failed to send");
+      }
+    }
   }
-
-  // LoRa -> PC
-  while (LORA_SERIAL.available()) {
-    char c = LORA_SERIAL.read();
-    Serial.write(c);
+  
+  // Check for incoming LoRa messages FROM SLAVE
+  if (e32ttl.available() > 0) {
+    ResponseContainer rc = e32ttl.receiveMessage();
+    
+    if (rc.status.code == 1) {
+      String received = rc.data;
+      
+      // CRITICAL: Print with [RECEIVED] tag so Flutter can identify it
+      Serial.println("[RECEIVED] " + received);
+    }
   }
+  
+  delay(10);
 }
