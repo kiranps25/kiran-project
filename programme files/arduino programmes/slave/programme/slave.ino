@@ -1,141 +1,155 @@
-// SLAVE.ino
-// ESP32-WROOM + E32 433MHz
-// Sends messages to master (MST) and can ask master to forward to another slave via "B02:Hello"
+#include "Arduino.h"
+#include "LoRa_E32.h"
+#include <Keypad.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 
-#define LORA_SERIAL  Serial1
-#define LORA_RX_PIN  16
-#define LORA_TX_PIN  17
-#define LORA_M0_PIN  18
-#define LORA_M1_PIN  19
-#define LORA_AUX_PIN 4
+// LoRa E32 pins
+#define RXD2 16
+#define TXD2 17
+#define M0_PIN 4
+#define M1_PIN 5
+#define AUX_PIN 18
 
-const char* NODE_ID   = "B01";   // <<< CHANGE this per slave: "A01", "B01", "B02", etc.
-const char* MASTER_ID = "MST";
+// OLED Display settings
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
-String pcBuffer   = "";
-String loraBuffer = "";
+// 4x4 Keypad setup
+const byte ROWS = 4;
+const byte COLS = 4;
+char keys[ROWS][COLS] = {
+  {'1','2','3','A'},
+  {'4','5','6','B'},
+  {'7','8','9','C'},
+  {'*','0','#','D'}
+};
+byte rowPins[ROWS] = {26, 25, 33, 32};
+byte colPins[COLS] = {13, 12, 14, 27};
+Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 
-void setupPins() {
-  pinMode(LORA_M0_PIN, OUTPUT);
-  pinMode(LORA_M1_PIN, OUTPUT);
-  pinMode(LORA_AUX_PIN, INPUT);
+// LoRa E32 module
+LoRa_E32 e32ttl(&Serial2, AUX_PIN, M0_PIN, M1_PIN);
 
-  digitalWrite(LORA_M0_PIN, LOW); // normal mode
-  digitalWrite(LORA_M1_PIN, LOW);
-}
-
-void waitAux() {
-  unsigned long start = millis();
-  while (digitalRead(LORA_AUX_PIN) == LOW) {
-    if (millis() - start > 1000) break;
-  }
-}
+String inputBuffer = "";
+String lastReceived = "";
 
 void setup() {
-  Serial.begin(115200); 
-  LORA_SERIAL.begin(9600, SERIAL_8N1, LORA_RX_PIN, LORA_TX_PIN);
-  setupPins();
+  Serial.begin(115200);
+  Serial2.begin(9600, SERIAL_8N1, RXD2, TXD2);
   delay(500);
-
-  Serial.print("SLAVE started, ID = ");
-  Serial.println(NODE_ID);
-  Serial.println("Type on Serial Monitor:");
-  Serial.println("  text              -> sends to MST");
-  Serial.println("  B02:Hello there   -> ask MST to forward to B02");
-}
-
-void sendLoRaLine(const String& line) {
-  waitAux();
-  LORA_SERIAL.print(line);
-  LORA_SERIAL.print('\n');
-  Serial.print("[LoRa TX] ");
-  Serial.println(line);
-}
-
-// Handle line from PC Serial
-void handlePcLine(const String& line) {
-  String s = line;
-  s.trim();
-  if (s.length() == 0) return;
-
-  String payload;
-
-  int colonIndex = s.indexOf(':');
-  if (colonIndex > 0) {
-    // Format: TOID:message  -> forward request
-    String toId = s.substring(0, colonIndex);
-    String msg  = s.substring(colonIndex + 1);
-    toId.trim();
-    msg.trim();
-    if (toId.length() == 0 || msg.length() == 0) {
-      Serial.println("Bad format. Example: B02:Hello there");
-      return;
-    }
-    payload = "TO=" + toId + ";" + msg;
-  } else {
-    // No colon: send directly to master only
-    payload = s; // plain message to MST
+  
+  // Initialize I2C and OLED
+  Wire.begin(21, 22);
+  
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;);
   }
-
-  // Build packet: SRC|DST|TYPE|PAYLOAD
-  String packet = String(NODE_ID) + "|" + MASTER_ID + "|MSG|" + payload;
-  sendLoRaLine(packet);
-}
-
-// Handle line from LoRa
-void handleLoRaLine(const String& line) {
-  Serial.print("[LoRa RX raw] ");
-  Serial.println(line);
-
-  int p1 = line.indexOf('|');
-  int p2 = line.indexOf('|', p1 + 1);
-  int p3 = line.indexOf('|', p2 + 1);
-  if (p1 < 0 || p2 < 0 || p3 < 0) {
-    Serial.println("Malformed packet");
-    return;
-  }
-
-  String src     = line.substring(0, p1);
-  String dst     = line.substring(p1 + 1, p2);
-  String type    = line.substring(p2 + 1, p3);
-  String payload = line.substring(p3 + 1);
-
-  src.trim(); dst.trim(); type.trim(); payload.trim();
-
-  if (dst == NODE_ID && type == "MSG") {
-    Serial.print("MESSAGE FROM ");
-    Serial.print(src);
-    Serial.print(": ");
-    Serial.println(payload);
-  } else {
-    // Not for this node -> ignore
-  }
+  
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0,0);
+  display.println("LoRa Slave Init...");
+  display.display();
+  delay(1000);
+  
+  // Initialize E32 LoRa
+  e32ttl.begin();
+  
+  display.clearDisplay();
+  display.setCursor(0,0);
+  display.println("LoRa Chat Ready");
+  display.println("----------------");
+  display.display();
+  
+  Serial.println("Slave ready");
 }
 
 void loop() {
-  // 1) Read from PC Serial
-  while (Serial.available()) {
-    char c = Serial.read();
-    if (c == '\n' || c == '\r') {
-      if (pcBuffer.length() > 0) {
-        handlePcLine(pcBuffer);
-        pcBuffer = "";
+  // Read keyboard input
+  char key = keypad.getKey();
+  
+  if (key) {
+    if (key == 'A') {
+      // Send message on 'A' press
+      if (inputBuffer.length() > 0) {
+        sendMessage(inputBuffer);
+        inputBuffer = "";
+        updateDisplay();
+      }
+    } else if (key == '*') {
+      // Clear buffer on '*' press
+      inputBuffer = "";
+      updateDisplay();
+    } else if (key == 'D') {
+      // Backspace on 'D' press
+      if (inputBuffer.length() > 0) {
+        inputBuffer.remove(inputBuffer.length() - 1);
+        updateDisplay();
       }
     } else {
-      pcBuffer += c;
+      // Add character to buffer
+      inputBuffer += key;
+      updateDisplay();
     }
   }
+  
+  // Check for incoming LoRa messages
+  if (e32ttl.available() > 0) {
+    ResponseContainer rc = e32ttl.receiveMessage();
+    
+    if (rc.status.code == 1) {
+      lastReceived = rc.data;
+      Serial.println("[RECEIVED] " + lastReceived);
+      updateDisplay();
+    }
+  }
+}
 
-  // 2) Read from LoRa
-  while (LORA_SERIAL.available()) {
-    char c = LORA_SERIAL.read();
-    if (c == '\n' || c == '\r') {
-      if (loraBuffer.length() > 0) {
-        handleLoRaLine(loraBuffer);
-        loraBuffer = "";
-      }
-    } else {
-      loraBuffer += c;
-    }
+void sendMessage(String msg) {
+  ResponseStatus rs = e32ttl.sendMessage(msg);
+  
+  if (rs.code == 1) {
+    Serial.println("[SENT] " + msg);
+  } else {
+    Serial.println("[ERROR] Send failed");
   }
+}
+
+void updateDisplay() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(0,0);
+  
+  // Header
+  display.println("LoRa Chat (Slave)");
+  display.println("----------------");
+  
+  // Last received message
+  display.print("RX: ");
+  if (lastReceived.length() > 18) {
+    display.println(lastReceived.substring(0, 18));
+  } else {
+    display.println(lastReceived);
+  }
+  
+  display.println("----------------");
+  
+  // Input buffer
+  display.print("TX: ");
+  if (inputBuffer.length() > 18) {
+    display.println(inputBuffer.substring(inputBuffer.length() - 18));
+  } else {
+    display.println(inputBuffer);
+  }
+  
+  display.println("");
+  display.println("A Send * Clear");
+  
+  display.display();
 }
