@@ -1,10 +1,10 @@
 #include "Arduino.h"
 #include "LoRa_E32.h"
 
-#define RXD2 16
+#define RXD2 5
 #define TXD2 17
 #define M0_PIN 4
-#define M1_PIN 5
+#define M1_PIN 16
 #define AUX_PIN 18
 
 LoRa_E32 e32ttl(&Serial2, AUX_PIN, M0_PIN, M1_PIN);
