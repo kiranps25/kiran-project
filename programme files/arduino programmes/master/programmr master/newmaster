@@ -1,0 +1,366 @@
+#include "Arduino.h"
+#include "LoRa_E32.h"
+#include <Keypad.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+#define BUZZER_PIN 21
+#define MAX_MESSAGES 100
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+LoRa_E32 e32ttl(&Serial2, 18, 4, 15);
+
+const byte ROWS = 4;
+const byte COLS = 4;
+char keys[ROWS][COLS] = {
+  {'1','2','3','A'},
+  {'4','5','6','B'},
+  {'7','8','9','C'},
+  {'*','0','#','D'}
+};
+byte rowPins[ROWS] = {13, 12, 14, 27};
+byte colPins[COLS] = {26, 25, 33, 32};
+Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
+
+String t9Map[10] = {
+  " 0", ".,?!1'-()@", "abc2", "def3", "ghi4",
+  "jkl5", "mno6", "pqrs7", "tuv8", "wxyz9"
+};
+
+String inputBuffer = "";
+
+// Message history - stores last 100 conversations
+struct Message {
+  String text;
+  bool isSent;  // true = sent by me, false = received
+};
+
+Message messageHistory[MAX_MESSAGES];
+int messageCount = 0;
+int messageIndex = 0;
+
+char lastKey = '\0';
+int keyPressCount = 0;
+unsigned long lastKeyTime = 0;
+int cursorPosition = -1;
+const unsigned long keyTimeout = 1000;
+
+bool viewMode = false;
+int scrollPosition = 0;  // For scrolling through messages
+
+void setup() {
+  Serial.begin(115200);
+  Serial2.begin(9600, SERIAL_8N1, 16, 17);
+  
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+  
+  Wire.begin(23, 22);
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("OLED failed"));
+    while(1);
+  }
+  
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println("LoRa Chat Slave");
+  display.println("100 Msg History");
+  display.println("");
+  display.println("# = Send");
+  display.println("* = Backspace");
+  display.println("A = Clear");
+  display.println("C = View History");
+  display.println("D = Exit View");
+  display.display();
+  delay(3000);
+  
+  e32ttl.begin();
+  delay(100);
+  
+  Serial.println("Slave Ready - 100 Message History");
+  
+  beep(150);
+  delay(100);
+  beep(150);
+  
+  updateDisplay();
+}
+
+void loop() {
+  char key = keypad.getKey();
+  
+  if (lastKey != '\0' && (millis() - lastKeyTime > keyTimeout)) {
+    lastKey = '\0';
+    keyPressCount = 0;
+    cursorPosition = -1;
+  }
+  
+  if (key) {
+    handleKeyPress(key);
+  }
+  
+  if (Serial2.available()) {
+    String received = Serial2.readStringUntil('\n');
+    received.trim();
+    
+    if (received.length() > 0) {
+      // Add received message to history
+      addMessage(received, false);
+      
+      Serial.print("[RECEIVED] ");
+      Serial.println(received);
+      
+      updateDisplay();
+      
+      beep(200);
+      delay(150);
+      beep(200);
+      delay(150);
+      beep(200);
+    }
+  }
+  
+  delay(10);
+}
+
+void addMessage(String msg, bool sent) {
+  messageHistory[messageIndex].text = msg;
+  messageHistory[messageIndex].isSent = sent;
+  
+  messageIndex = (messageIndex + 1) % MAX_MESSAGES;
+  
+  if (messageCount < MAX_MESSAGES) {
+    messageCount++;
+  }
+}
+
+void handleKeyPress(char key) {
+  beep(50);
+  
+  if (key == 'C') {
+    // Switch to view history mode
+    viewMode = true;
+    scrollPosition = 0;
+    updateDisplay();
+    return;
+  }
+  
+  if (key == 'D') {
+    // Switch back to typing mode
+    viewMode = false;
+    updateDisplay();
+    return;
+  }
+  
+  if (viewMode) {
+    // In view mode - use keys to scroll
+    if (key == '2') {
+      // Scroll up
+      if (scrollPosition > 0) {
+        scrollPosition--;
+        updateDisplay();
+      }
+    } else if (key == '8') {
+      // Scroll down
+      if (scrollPosition < messageCount - 1) {
+        scrollPosition++;
+        updateDisplay();
+      }
+    } else if (key == '1') {
+      // Jump to top
+      scrollPosition = 0;
+      updateDisplay();
+    } else if (key == '9') {
+      // Jump to bottom
+      scrollPosition = max(0, messageCount - 5);
+      updateDisplay();
+    }
+    return;
+  }
+  
+  // Normal typing mode
+  if (key == '#') {
+    if (inputBuffer.length() > 0) {
+      Serial2.println(inputBuffer);
+      Serial.print("[SENT] ");
+      Serial.println(inputBuffer);
+      
+      // Add sent message to history
+      addMessage(inputBuffer, true);
+      
+      beep(80);
+      delay(50);
+      beep(80);
+      delay(50);
+      beep(80);
+      
+      inputBuffer = "";
+      lastKey = '\0';
+      keyPressCount = 0;
+      cursorPosition = -1;
+      updateDisplay();
+    }
+  } 
+  else if (key == '*') {
+    if (inputBuffer.length() > 0) {
+      inputBuffer.remove(inputBuffer.length() - 1);
+      lastKey = '\0';
+      keyPressCount = 0;
+      cursorPosition = -1;
+      updateDisplay();
+    }
+  }
+  else if (key == 'A') {
+    inputBuffer = "";
+    lastKey = '\0';
+    keyPressCount = 0;
+    cursorPosition = -1;
+    updateDisplay();
+  }
+  else if (key == 'B') {
+    if (inputBuffer.length() > 0) {
+      char lastChar = inputBuffer.charAt(inputBuffer.length() - 1);
+      if (isalpha(lastChar)) {
+        if (isupper(lastChar)) {
+          inputBuffer.setCharAt(inputBuffer.length() - 1, tolower(lastChar));
+        } else {
+          inputBuffer.setCharAt(inputBuffer.length() - 1, toupper(lastChar));
+        }
+        updateDisplay();
+      }
+    }
+  }
+  else if (key >= '0' && key <= '9') {
+    handleT9Input(key);
+  }
+}
+
+void handleT9Input(char key) {
+  int keyIndex = key - '0';
+  unsigned long currentTime = millis();
+  
+  if (key == lastKey && (currentTime - lastKeyTime < keyTimeout)) {
+    keyPressCount++;
+    String chars = t9Map[keyIndex];
+    keyPressCount = keyPressCount % chars.length();
+    
+    if (cursorPosition >= 0 && cursorPosition < inputBuffer.length()) {
+      inputBuffer.setCharAt(cursorPosition, chars.charAt(keyPressCount));
+    }
+  } 
+  else {
+    String chars = t9Map[keyIndex];
+    keyPressCount = 0;
+    inputBuffer += chars.charAt(0);
+    cursorPosition = inputBuffer.length() - 1;
+    lastKey = key;
+  }
+  
+  lastKeyTime = currentTime;
+  updateDisplay();
+}
+
+void updateDisplay() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  
+  if (viewMode) {
+    // VIEW HISTORY MODE
+    display.setCursor(0, 0);
+    display.print("Messages (");
+    display.print(messageCount);
+    display.print("/100)");
+    
+    display.setCursor(0, 9);
+    display.println("2=Up 8=Down D=Exit");
+    display.drawLine(0, 18, 127, 18, SSD1306_WHITE);
+    
+    // Show 4 messages at a time
+    int y = 20;
+    for (int i = 0; i < 4; i++) {
+      int msgIdx = scrollPosition + i;
+      
+      if (msgIdx >= messageCount) break;
+      
+      // Calculate actual array position
+      int actualIdx = (messageIndex - messageCount + msgIdx + MAX_MESSAGES) % MAX_MESSAGES;
+      
+      display.setCursor(0, y);
+      
+      // Show sent/received indicator
+      if (messageHistory[actualIdx].isSent) {
+        display.print(">");  // Sent by me
+      } else {
+        display.print("<");  // Received
+      }
+      
+      // Truncate long messages
+      String msg = messageHistory[actualIdx].text;
+      if (msg.length() > 19) {
+        msg = msg.substring(0, 19) + "..";
+      }
+      display.println(msg);
+      
+      y += 10;
+    }
+    
+  } else {
+    // TYPING MODE
+    display.setCursor(0, 0);
+    display.println("Last Received:");
+    display.setCursor(0, 10);
+    
+    // Find last received message
+    String lastReceived = "";
+    for (int i = messageCount - 1; i >= 0; i--) {
+      int actualIdx = (messageIndex - messageCount + i + MAX_MESSAGES) % MAX_MESSAGES;
+      if (!messageHistory[actualIdx].isSent) {
+        lastReceived = messageHistory[actualIdx].text;
+        break;
+      }
+    }
+    
+    if (lastReceived.length() > 21) {
+      display.println(lastReceived.substring(0, 21));
+    } else {
+      display.println(lastReceived);
+    }
+    
+    display.drawLine(0, 26, 127, 26, SSD1306_WHITE);
+    
+    display.setCursor(0, 30);
+    display.println("Type (# send):");
+    display.setCursor(0, 40);
+    
+    if (inputBuffer.length() > 21) {
+      display.println(inputBuffer.substring(0, 21));
+      display.println(inputBuffer.substring(21));
+    } else {
+      display.print(inputBuffer);
+      
+      if (lastKey != '\0' && (millis() - lastKeyTime < keyTimeout)) {
+        display.print("_");
+      }
+    }
+    
+    display.setCursor(0, 56);
+    display.print("C=View(");
+    display.print(messageCount);
+    display.print(")");
+  }
+  
+  display.display();
+}
+
+void beep(int duration) {
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(duration);
+  digitalWrite(BUZZER_PIN, LOW);
+}
