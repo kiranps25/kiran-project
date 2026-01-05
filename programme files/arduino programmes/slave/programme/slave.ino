@@ -27,8 +27,8 @@ char keys[ROWS][COLS] = {
   {'7','8','9','C'},
   {'*','0','#','D'}
 };
-byte rowPins[ROWS] = {26, 25, 33, 32};
-byte colPins[COLS] = {13, 12, 14, 27};
+byte rowPins[ROWS] ={13, 12, 14, 27};
+byte colPins[COLS] = {26, 25, 33, 32};
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 
 // LoRa E32 module
@@ -43,7 +43,7 @@ void setup() {
   delay(500);
   
   // Initialize I2C and OLED
-  Wire.begin(21, 22);
+  Wire.begin(23, 22);
   
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
     Serial.println(F("SSD1306 allocation failed"));
